@@ -1,30 +1,5 @@
 pipeline {
-    agent {
-        kubernetes {
-            yaml '''
-apiVersion: v1
-kind: Pod
-metadata:
-  labels:
-    some-label: jenkins-build-agent
-spec:
-  containers:
-  - name: builder
-    image: cimg/python:3.11-browsers
-    command: ['cat']
-    tty: true
-    securityContext:
-      privileged: true
-    volumeMounts:
-    - mountPath: /var/run/docker.sock
-      name: docker-sock
-  volumes:
-  - name: docker-sock
-    hostPath:
-      path: /var/run/docker.sock
-'''
-        }
-    }
+    agent any
 
     options {
         timestamps()
@@ -106,32 +81,31 @@ spec:
     stages {
         stage('Checkout') {
             steps {
-                container('builder') {
-                    echo 'Checking out source code...'
-                    checkout scm
+                echo 'Checking out source code...'
+                checkout scm
 
-                    script {
-                        env.GIT_COMMIT_SHORT = sh(
-                            script: 'git rev-parse --short HEAD',
-                            returnStdout: true
-                        ).trim()
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
 
-                        env.SELECTED_AWS_REGION = params.AWS_REGION
-                        env.SELECTED_ECR_REPOSITORY = params.ECR_REPOSITORY
-                        env.SELECTED_EKS_CLUSTER = params.EKS_CLUSTER
-                        env.SELECTED_K8S_NAMESPACE = params.K8S_NAMESPACE
-                        env.PUSH_LATEST_VALUE = params.PUSH_LATEST.toString()
-                        env.DEPLOY_TO_EKS_VALUE = params.DEPLOY_TO_EKS.toString()
+                    env.SELECTED_AWS_REGION = params.AWS_REGION
+                    env.SELECTED_ECR_REPOSITORY = params.ECR_REPOSITORY
+                    env.SELECTED_EKS_CLUSTER = params.EKS_CLUSTER
+                    env.SELECTED_K8S_NAMESPACE = params.K8S_NAMESPACE
+                    env.PUSH_LATEST_VALUE = params.PUSH_LATEST.toString()
+                    env.DEPLOY_TO_EKS_VALUE = params.DEPLOY_TO_EKS.toString()
 
-                        if (params.IMAGE_TAG?.trim()) {
-                            env.SELECTED_IMAGE_TAG = params.IMAGE_TAG.trim()
-                        } else {
-                            env.SELECTED_IMAGE_TAG =
-                                "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
-                        }
+                    if (params.IMAGE_TAG?.trim()) {
+                        env.SELECTED_IMAGE_TAG = params.IMAGE_TAG.trim()
+                    } else {
+                        env.SELECTED_IMAGE_TAG =
+                            "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
                     }
+                }
 
-                    echo """
+                echo """
 ==========================================
 Build configuration
 ==========================================
@@ -146,7 +120,31 @@ Push Latest    : ${params.PUSH_LATEST}
 Deploy to EKS  : ${params.DEPLOY_TO_EKS}
 ==========================================
 """
-                }
+            }
+        }
+
+        stage('Prepare Tools') {
+            steps {
+                sh '''
+                    set +e
+                    echo "Checking/Installing required binaries..."
+                    
+                    if ! command -v python3 &> /dev/null; then
+                        apt-get update && apt-get install -y python3 python3-pip python3-venv curl unzip
+                    fi
+
+                    if ! command -v aws &> /dev/null; then
+                        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                        unzip -q awscliv2.zip
+                        ./aws/install --update
+                    fi
+
+                    if ! command -v kubectl &> /dev/null; then
+                        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                        chmod +x kubectl
+                        mv kubectl /usr/local/bin/
+                    fi
+                '''
             }
         }
 
@@ -158,94 +156,78 @@ Deploy to EKS  : ${params.DEPLOY_TO_EKS}
             }
 
             steps {
-                container('builder') {
-                    echo 'Running application tests...'
+                echo 'Running application tests...'
 
-                    sh '''
-                        set -eux
+                sh '''
+                    set -eux
 
-                        python3 --version
+                    python3 --version
 
-                        python3 -m venv .venv
-                        . .venv/bin/activate
+                    python3 -m venv .venv
+                    . .venv/bin/activate
 
-                        python -m pip install --upgrade pip
+                    python -m pip install --upgrade pip
+                    if [ -f "requirements.txt" ]; then
                         pip install -r requirements.txt
-                        pip install pytest
+                    fi
+                    pip install pytest
 
-                        pytest -v
-                    '''
-                }
+                    pytest -v
+                '''
             }
         }
 
         stage('Build and Push Image') {
             steps {
-                container('builder') {
-                    withCredentials([
-                        [$class: 'AmazonWebServicesCredentialsBinding',
-                         credentialsId: "${params.AWS_CREDENTIALS_ID}"]
-                    ]) {
-                        script {
-                            // Ensure AWS CLI, Docker, and kubectl are available
-                            sh '''
-                                if ! command -v aws &> /dev/null; then
-                                    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                                    unzip -q awscliv2.zip
-                                    sudo ./aws/install
-                                fi
-                                if ! command -v kubectl &> /dev/null; then
-                                    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-                                    chmod +x kubectl
-                                    sudo mv kubectl /usr/local/bin/
-                                fi
-                            '''
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: "${params.AWS_CREDENTIALS_ID}"]
+                ]) {
+                    script {
+                        env.AWS_ACCOUNT_ID = sh(
+                            script: '''
+                                aws sts get-caller-identity \
+                                    --query Account \
+                                    --output text
+                            ''',
+                            returnStdout: true
+                        ).trim()
 
-                            env.AWS_ACCOUNT_ID = sh(
-                                script: '''
-                                    aws sts get-caller-identity \
-                                        --query Account \
-                                        --output text
-                                ''',
-                                returnStdout: true
-                            ).trim()
+                        env.ECR_REGISTRY =
+                            "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.SELECTED_AWS_REGION}.amazonaws.com"
 
-                            env.ECR_REGISTRY =
-                                "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.SELECTED_AWS_REGION}.amazonaws.com"
+                        env.IMAGE_URI =
+                            "${env.ECR_REGISTRY}/${env.SELECTED_ECR_REPOSITORY}:${env.SELECTED_IMAGE_TAG}"
 
-                            env.IMAGE_URI =
-                                "${env.ECR_REGISTRY}/${env.SELECTED_ECR_REPOSITORY}:${env.SELECTED_IMAGE_TAG}"
-
-                            env.LATEST_IMAGE_URI =
-                                "${env.ECR_REGISTRY}/${env.SELECTED_ECR_REPOSITORY}:latest"
-                        }
-
-                        sh '''
-                            set -eux
-
-                            echo "Image URI: ${IMAGE_URI}"
-
-                            aws ecr get-login-password \
-                                --region "${SELECTED_AWS_REGION}" \
-                            | docker login \
-                                --username AWS \
-                                --password-stdin "${ECR_REGISTRY}"
-
-                            docker build \
-                                -t "${IMAGE_URI}" \
-                                -t "${LATEST_IMAGE_URI}" \
-                                .
-
-                            docker push "${IMAGE_URI}"
-
-                            if [ "${PUSH_LATEST_VALUE}" = "true" ]; then
-                                echo "Pushing latest image tag..."
-                                docker push "${LATEST_IMAGE_URI}"
-                            else
-                                echo "Skipping latest image tag."
-                            fi
-                        '''
+                        env.LATEST_IMAGE_URI =
+                            "${env.ECR_REGISTRY}/${env.SELECTED_ECR_REPOSITORY}:latest"
                     }
+
+                    sh '''
+                        set -eux
+
+                        echo "Image URI: ${IMAGE_URI}"
+
+                        aws ecr get-login-password \
+                            --region "${SELECTED_AWS_REGION}" \
+                        | docker login \
+                            --username AWS \
+                            --password-stdin "${ECR_REGISTRY}"
+
+                        docker build \
+                            -t "${IMAGE_URI}" \
+                            -t "${LATEST_IMAGE_URI}" \
+                            .
+
+                        docker push "${IMAGE_URI}"
+
+                        if [ "${PUSH_LATEST_VALUE}" = "true" ]; then
+                            echo "Pushing latest image tag..."
+                            docker push "${LATEST_IMAGE_URI}"
+                        else
+                            echo "Skipping latest image tag."
+                        fi
+                    '''
                 }
             }
         }
@@ -258,37 +240,35 @@ Deploy to EKS  : ${params.DEPLOY_TO_EKS}
             }
 
             steps {
-                container('builder') {
-                    withCredentials([
-                        [$class: 'AmazonWebServicesCredentialsBinding',
-                         credentialsId: "${params.AWS_CREDENTIALS_ID}"]
-                    ]) {
-                        sh '''
-                            set -eux
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: "${params.AWS_CREDENTIALS_ID}"]
+                ]) {
+                    sh '''
+                        set -eux
 
-                            aws eks update-kubeconfig \
-                                --region "${SELECTED_AWS_REGION}" \
-                                --name "${SELECTED_EKS_CLUSTER}"
+                        aws eks update-kubeconfig \
+                            --region "${SELECTED_AWS_REGION}" \
+                            --name "${SELECTED_EKS_CLUSTER}"
 
-                            kubectl apply -f k8s/namespace.yaml --validate=false
+                        kubectl apply -f k8s/namespace.yaml --validate=false
 
-                            sed \
-                                -e "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
-                                -e "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
-                                k8s/deployment.yaml \
-                                | kubectl apply -f - --validate=false
+                        sed \
+                            -e "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
+                            -e "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                            k8s/deployment.yaml \
+                            | kubectl apply -f - --validate=false
 
-                            sed \
-                                "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
-                                k8s/service.yaml \
-                                | kubectl apply -f - --validate=false
+                        sed \
+                            "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                            k8s/service.yaml \
+                            | kubectl apply -f - --validate=false
 
-                            kubectl rollout status \
-                                deployment/"${APP_NAME}" \
-                                --namespace "${SELECTED_K8S_NAMESPACE}" \
-                                --timeout=180s
-                        '''
-                    }
+                        kubectl rollout status \
+                            deployment/"${APP_NAME}" \
+                            --namespace "${SELECTED_K8S_NAMESPACE}" \
+                            --timeout=180s
+                    '''
                 }
             }
         }
@@ -301,29 +281,27 @@ Deploy to EKS  : ${params.DEPLOY_TO_EKS}
             }
 
             steps {
-                container('builder') {
-                    sh '''
-                        set -eux
+                sh '''
+                    set -eux
 
-                        kubectl get deployment "${APP_NAME}" \
-                            --namespace "${SELECTED_K8S_NAMESPACE}" \
-                            --output wide
+                    kubectl get deployment "${APP_NAME}" \
+                        --namespace "${SELECTED_K8S_NAMESPACE}" \
+                        --output wide
 
-                        kubectl get pods \
-                            --namespace "${SELECTED_K8S_NAMESPACE}" \
-                            --output wide
+                    kubectl get pods \
+                        --namespace "${SELECTED_K8S_NAMESPACE}" \
+                        --output wide
 
-                        kubectl get service "${APP_NAME}" \
-                            --namespace "${SELECTED_K8S_NAMESPACE}"
+                    kubectl get service "${APP_NAME}" \
+                        --namespace "${SELECTED_K8S_NAMESPACE}"
 
-                        echo "Deployed image:"
-                        kubectl get deployment "${APP_NAME}" \
-                            --namespace "${SELECTED_K8S_NAMESPACE}" \
-                            --output jsonpath='{.spec.template.spec.containers[0].image}'
+                    echo "Deployed image:"
+                    kubectl get deployment "${APP_NAME}" \
+                        --namespace "${SELECTED_K8S_NAMESPACE}" \
+                        --output jsonpath='{.spec.template.spec.containers[0].image}'
 
-                        echo
-                    '''
-                }
+                    echo
+                '''
             }
         }
     }
@@ -347,9 +325,7 @@ Namespace   : ${env.SELECTED_K8S_NAMESPACE}
         }
 
         always {
-            container('builder') {
-                sh 'docker image prune -f || true'
-            }
+            sh 'docker image prune -f || true'
             deleteDir()
         }
     }
