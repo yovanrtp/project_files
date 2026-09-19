@@ -1,18 +1,18 @@
-# Use official Python image
-FROM python:3.10-slim
+FROM python:3.12-slim
 
-# Set working directory
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-# Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app code
 COPY app.py .
 
-# Expose port
+RUN useradd --create-home appuser
+USER appuser
+
 EXPOSE 5000
 
-# Run the app
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "app:app"]
