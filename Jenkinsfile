@@ -18,24 +18,24 @@ pipeline {
         // AWS Configuration
         AWS_REGION = "${params.AWS_REGION}"
         AWS_ACCOUNT_ID = "${params.AWS_ACCOUNT_ID}"
-        
+
         // ECR Configuration
         ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         ECR_REPO_NAME = "${params.ECR_REPO_NAME}"
         ECR_REPO_URL = "${ECR_REGISTRY}/${ECR_REPO_NAME}"
-        
+
         // Docker Configuration
         GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD 2>/dev/null || echo "unknown"', returnStdout: true).trim()
         DOCKER_IMAGE_TAG = "${BUILD_NUMBER}-${GIT_COMMIT_SHORT}"
         DOCKER_IMAGE = "${ECR_REPO_URL}:${DOCKER_IMAGE_TAG}"
         DOCKER_IMAGE_LATEST = "${ECR_REPO_URL}:latest"
-        
+
         // Kubernetes Configuration
         KUBE_CLUSTER = "${params.KUBE_CLUSTER}"
         KUBE_NAMESPACE = "${params.KUBE_NAMESPACE}"
         KUBE_DEPLOYMENT = "${params.APP_NAME}"
         REPLICAS = "${params.REPLICAS}"
-        
+
         // Build Configuration
         BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
     }
@@ -72,6 +72,14 @@ pipeline {
         }
 
         stage('📦 Dependencies') {
+            // FIX: run in a Python-capable container since the Jenkins
+            // controller image (jenkins/jenkins:lts) has no pip/python.
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                    args '-u root:root'
+                }
+            }
             steps {
                 script {
                     printStageHeader("INSTALLING DEPENDENCIES")
@@ -82,13 +90,13 @@ pipeline {
                         npm install
                         echo "✓ npm dependencies installed"
                     fi
-                    
+
                     # For Python projects
                     if [ -f "requirements.txt" ]; then
                         pip install -r requirements.txt
                         echo "✓ Python dependencies installed"
                     fi
-                    
+
                     # For Java projects
                     if [ -f "pom.xml" ]; then
                         mvn clean install -DskipTests
@@ -102,6 +110,12 @@ pipeline {
             when {
                 expression { !params.SKIP_TESTS }
             }
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                    args '-u root:root'
+                }
+            }
             steps {
                 script {
                     printStageHeader("RUNNING UNIT TESTS")
@@ -112,13 +126,13 @@ pipeline {
                         npm test -- --coverage --watchAll=false || true
                         echo "✓ Unit tests completed"
                     fi
-                    
+
                     # Python tests
                     if [ -f "requirements.txt" ]; then
                         python -m pytest tests/ -v --cov=app --cov-report=xml || true
                         echo "✓ Python tests completed"
                     fi
-                    
+
                     # Java tests
                     if [ -f "pom.xml" ]; then
                         mvn test || true
@@ -129,6 +143,12 @@ pipeline {
         }
 
         stage('🔬 Code Quality') {
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                    args '-u root:root'
+                }
+            }
             steps {
                 script {
                     printStageHeader("CODE QUALITY ANALYSIS")
@@ -150,6 +170,12 @@ pipeline {
         }
 
         stage('🏗️ Build Application') {
+            agent {
+                docker {
+                    image 'python:3.11-slim'
+                    args '-u root:root'
+                }
+            }
             steps {
                 script {
                     printStageHeader("BUILDING APPLICATION")
@@ -160,13 +186,13 @@ pipeline {
                         npm run build || npm run dev || true
                         echo "✓ Application built successfully"
                     fi
-                    
+
                     # Python build
                     if [ -f "requirements.txt" ]; then
                         python setup.py build || true
                         echo "✓ Python application packaged"
                     fi
-                    
+
                     # Java build
                     if [ -f "pom.xml" ]; then
                         mvn clean package -DskipTests
@@ -177,6 +203,7 @@ pipeline {
         }
 
         stage('🐳 Build Docker Image') {
+            agent any
             steps {
                 script {
                     printStageHeader("BUILDING DOCKER IMAGE")
@@ -187,15 +214,15 @@ pipeline {
                         echo "❌ Dockerfile not found!"
                         exit 1
                     fi
-                    
+
                     docker build -t ${DOCKER_IMAGE} \
                         --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
                         --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
                         --build-arg GIT_COMMIT=${GIT_COMMIT_SHORT} \
                         -f Dockerfile .
-                    
+
                     docker tag ${DOCKER_IMAGE} ${DOCKER_IMAGE_LATEST}
-                    
+
                     echo "✓ Docker image built successfully"
                     docker images | grep ${ECR_REPO_NAME}
                 '''
@@ -203,25 +230,24 @@ pipeline {
         }
 
         stage('🧪 Docker Image Tests') {
+            agent any
             steps {
                 script {
                     printStageHeader("TESTING DOCKER IMAGE")
                 }
                 sh '''
-                    # Run container for testing
                     docker run -d --name test-${BUILD_NUMBER} \
                         -p 8000:8080 \
                         ${DOCKER_IMAGE} &
-                    
+
                     sleep 10
-                    
+
                     if docker ps | grep -q "test-${BUILD_NUMBER}"; then
                         echo "✓ Container is running"
-                        
-                        # Test endpoints
+
                         curl -s http://localhost:8000/ || true
                         curl -s http://localhost:8000/health || true
-                        
+
                         docker stop test-${BUILD_NUMBER} || true
                         docker rm test-${BUILD_NUMBER} || true
                         echo "✓ Docker tests passed"
@@ -236,18 +262,17 @@ pipeline {
         }
 
         stage('🔍 Scan Docker Image') {
+            agent any
             steps {
                 script {
                     printStageHeader("SCANNING DOCKER IMAGE FOR VULNERABILITIES")
                 }
                 sh '''
-                    # Install Trivy if not present
                     if ! command -v trivy &> /dev/null; then
                         echo "Installing Trivy..."
                         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
                     fi
-                    
-                    # Scan Docker image
+
                     trivy image --severity HIGH,CRITICAL ${DOCKER_IMAGE} || true
                     echo "✓ Image vulnerability scan completed"
                 '''
@@ -255,6 +280,7 @@ pipeline {
         }
 
         stage('📤 Push to ECR') {
+            agent any
             when {
                 expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' }
             }
@@ -264,23 +290,20 @@ pipeline {
                     echo "ECR URL: ${ECR_REPO_URL}"
                 }
                 sh '''
-                    # Login to ECR using in-cluster IAM role
                     echo "Logging in to ECR..."
                     aws ecr get-login-password --region ${AWS_REGION} | \
                         docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                    
-                    # Create ECR repository if it doesn't exist
+
                     aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} \
                         --region ${AWS_REGION} 2>/dev/null || \
                         aws ecr create-repository --repository-name ${ECR_REPO_NAME} \
                         --region ${AWS_REGION} \
                         --image-scanning-configuration scanOnPush=true
-                    
-                    # Push images
+
                     echo "Pushing ${DOCKER_IMAGE}..."
                     docker push ${DOCKER_IMAGE}
                     echo "✓ Image pushed successfully"
-                    
+
                     docker push ${DOCKER_IMAGE_LATEST}
                     echo "✓ Latest tag pushed"
                 '''
@@ -288,6 +311,7 @@ pipeline {
         }
 
         stage('🧪 API Tests') {
+            agent any
             when {
                 expression { !params.SKIP_QA }
             }
@@ -301,21 +325,21 @@ pipeline {
                         echo "Testing: http://localhost:8080${endpoint}"
                         curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8080${endpoint} || echo "Endpoint not available"
                     done
-                    
+
                     echo "✓ API tests completed"
                 '''
             }
         }
 
         stage('📋 Generate Reports') {
+            agent any
             steps {
                 script {
                     printStageHeader("GENERATING REPORTS")
                 }
                 sh '''
                     mkdir -p reports
-                    
-                    # Generate HTML report
+
                     cat > reports/build-summary.html <<'EOF'
 <!DOCTYPE html>
 <html>
@@ -354,13 +378,14 @@ pipeline {
 </body>
 </html>
 EOF
-                    
+
                     echo "✓ Reports generated"
                 '''
             }
         }
 
         stage('🚀 Deploy to Kubernetes') {
+            agent any
             when {
                 expression { params.DEPLOY && (currentBuild.result == null || currentBuild.result == 'SUCCESS') }
             }
@@ -373,11 +398,9 @@ EOF
                     echo "Image: ${DOCKER_IMAGE}"
                 }
                 sh '''
-                    # Create namespace if it doesn't exist
                     kubectl create namespace ${KUBE_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
                     echo "✓ Namespace ready"
-                    
-                    # Create image pull secret for ECR
+
                     echo "Creating image pull secret..."
                     kubectl create secret docker-registry regcred \
                         --docker-server=${ECR_REGISTRY} \
@@ -387,15 +410,14 @@ EOF
                         -n ${KUBE_NAMESPACE} \
                         --dry-run=client -o yaml | kubectl apply -f -
                     echo "✓ Image pull secret ready"
-                    
-                    # Check if deployment exists
+
                     if kubectl get deployment ${KUBE_DEPLOYMENT} -n ${KUBE_NAMESPACE} 2>/dev/null; then
                         echo "Updating existing deployment..."
                         kubectl set image deployment/${KUBE_DEPLOYMENT} \
                             ${KUBE_DEPLOYMENT}=${DOCKER_IMAGE} \
                             -n ${KUBE_NAMESPACE} \
                             --record
-                        
+
                         kubectl scale deployment ${KUBE_DEPLOYMENT} \
                             --replicas=${REPLICAS} \
                             -n ${KUBE_NAMESPACE}
@@ -460,13 +482,14 @@ spec:
           value: "${GIT_COMMIT_SHORT}"
 EOF
                     fi
-                    
+
                     echo "✓ Deployment created/updated"
                 '''
             }
         }
 
         stage('⏳ Wait for Rollout') {
+            agent any
             when {
                 expression { params.DEPLOY }
             }
@@ -479,13 +502,14 @@ EOF
                     kubectl rollout status deployment/${KUBE_DEPLOYMENT} \
                         -n ${KUBE_NAMESPACE} \
                         --timeout=5m
-                    
+
                     echo "✓ Rollout completed successfully"
                 '''
             }
         }
 
         stage('✅ Verify Deployment') {
+            agent any
             when {
                 expression { params.DEPLOY }
             }
@@ -496,23 +520,22 @@ EOF
                 sh '''
                     echo "Deployment Status:"
                     kubectl get deployment ${KUBE_DEPLOYMENT} -n ${KUBE_NAMESPACE} -o wide
-                    
+
                     echo ""
                     echo "Pod Status:"
                     kubectl get pods -n ${KUBE_NAMESPACE} -l app=${KUBE_DEPLOYMENT}
-                    
+
                     echo ""
                     echo "Recent Pod Logs:"
                     kubectl logs -n ${KUBE_NAMESPACE} -l app=${KUBE_DEPLOYMENT} --tail=30 2>/dev/null || echo "No logs available"
-                    
-                    # Check replica status
+
                     READY=$(kubectl get deployment ${KUBE_DEPLOYMENT} -n ${KUBE_NAMESPACE} -o jsonpath='{.status.readyReplicas}')
                     DESIRED=$(kubectl get deployment ${KUBE_DEPLOYMENT} -n ${KUBE_NAMESPACE} -o jsonpath='{.spec.replicas}')
-                    
+
                     echo ""
                     echo "Replica Status: ${READY}/${DESIRED}"
-                    
-                    if [ "${READY}" == "${DESIRED}" ]; then
+
+                    if [ "${READY}" = "${DESIRED}" ]; then
                         echo "✓ All ${READY} replicas are ready!"
                     else
                         echo "⚠️ Only ${READY}/${DESIRED} replicas ready (waiting...)"
@@ -522,6 +545,7 @@ EOF
         }
 
         stage('📊 Create/Update Service') {
+            agent any
             when {
                 expression { params.DEPLOY }
             }
@@ -530,7 +554,6 @@ EOF
                     printStageHeader("CREATING/UPDATING SERVICE")
                 }
                 sh '''
-                    # Check if service exists
                     if ! kubectl get svc ${KUBE_DEPLOYMENT} -n ${KUBE_NAMESPACE} 2>/dev/null; then
                         echo "Creating LoadBalancer service..."
                         cat <<EOF | kubectl apply -f -
@@ -555,13 +578,12 @@ EOF
                     else
                         echo "✓ Service already exists"
                     fi
-                    
-                    # Get service endpoint
+
                     echo ""
                     echo "Waiting for LoadBalancer endpoint..."
-                    for i in {1..10}; do
+                    for i in $(seq 1 10); do
                         LB_ENDPOINT=$(kubectl get svc ${KUBE_DEPLOYMENT} -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-                        
+
                         if [ -n "${LB_ENDPOINT}" ]; then
                             echo "✓ Service accessible at: http://${LB_ENDPOINT}"
                             break
@@ -570,7 +592,7 @@ EOF
                             sleep 5
                         fi
                     done
-                    
+
                     echo ""
                     echo "Service Information:"
                     kubectl get svc ${KUBE_DEPLOYMENT} -n ${KUBE_NAMESPACE}
@@ -583,18 +605,16 @@ EOF
         always {
             script {
                 printStageHeader("BUILD SUMMARY")
-                sh '''
-                    echo "Build Status: ${currentBuild.result}"
-                    echo "Build Number: ${BUILD_NUMBER}"
-                    echo "Build Duration: ${currentBuild.durationString}"
-                    echo "Build URL: ${BUILD_URL}"
-                '''
+                // FIX: currentBuild.result / durationString / BUILD_URL are Groovy
+                // values, not shell env vars — use Groovy echo, not sh '''...'''.
+                echo "Build Status: ${currentBuild.result}"
+                echo "Build Number: ${BUILD_NUMBER}"
+                echo "Build Duration: ${currentBuild.durationString}"
+                echo "Build URL: ${BUILD_URL}"
             }
 
-            // Archive reports
             archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
-            
-            // Clean Docker images
+
             sh '''
                 docker rmi ${DOCKER_IMAGE} 2>/dev/null || true
                 docker rmi ${DOCKER_IMAGE_LATEST} 2>/dev/null || true
@@ -619,12 +639,14 @@ EOF
         failure {
             script {
                 printStageHeader("BUILD FAILED ❌")
-                sh '''
-                    echo "Check logs for details"
-                    if [ "${DEPLOY}" == "true" ]; then
+                echo "Check logs for details"
+                // FIX: use Groovy params.DEPLOY instead of an unset ${DEPLOY}
+                // shell var, and avoid the non-POSIX "==" inside [ ].
+                if (params.DEPLOY) {
+                    sh '''
                         kubectl describe pods -n ${KUBE_NAMESPACE} -l app=${KUBE_DEPLOYMENT} || true
-                    fi
-                '''
+                    '''
+                }
             }
         }
     }
