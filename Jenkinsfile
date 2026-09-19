@@ -1,6 +1,4 @@
-```groovy
 pipeline {
-
     agent any
 
     options {
@@ -10,104 +8,141 @@ pipeline {
         skipDefaultCheckout(true)
     }
 
+    parameters {
+        choice(
+            name: 'AWS_REGION',
+            choices: [
+                'us-east-1',
+                'us-east-2',
+                'us-west-1',
+                'us-west-2'
+            ],
+            description: 'AWS Region used for ECR and EKS.'
+        )
+
+        string(
+            name: 'ECR_REPOSITORY',
+            defaultValue: 'jenkins-demo',
+            trim: true,
+            description: 'Amazon ECR repository name.'
+        )
+
+        string(
+            name: 'EKS_CLUSTER',
+            defaultValue: 'demo-eks',
+            trim: true,
+            description: 'Target Amazon EKS cluster name.'
+        )
+
+        string(
+            name: 'K8S_NAMESPACE',
+            defaultValue: 'jenkins-demo',
+            trim: true,
+            description: 'Kubernetes namespace for the deployment.'
+        )
+
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: '',
+            trim: true,
+            description: 'Optional image tag. Leave empty to use BUILD_NUMBER-GIT_COMMIT.'
+        )
+
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run application tests before building the Docker image.'
+        )
+
+        booleanParam(
+            name: 'PUSH_LATEST',
+            defaultValue: true,
+            description: 'Also push the Docker image with the latest tag.'
+        )
+
+        booleanParam(
+            name: 'DEPLOY_TO_EKS',
+            defaultValue: true,
+            description: 'Deploy the pushed image to Amazon EKS.'
+        )
+
+        string(
+            name: 'AWS_CREDENTIALS_ID',
+            defaultValue: 'aws-jenkins-credentials',
+            trim: true,
+            description: 'Jenkins credential ID containing AWS credentials.'
+        )
+    }
+
     environment {
-
-        // AWS
-        AWS_REGION = 'us-east-1'
-
-        // ECR
-        ECR_REPOSITORY = 'jenkins-demo'
-
-        // EKS
-        EKS_CLUSTER = 'demo-eks'
-
-        // Kubernetes
-        K8S_NAMESPACE = 'jenkins-demo'
+        APP_NAME = 'jenkins-demo'
     }
 
     stages {
-
-        /*
-         * ============================================
-         * CHECKOUT
-         * ============================================
-         */
-
         stage('Checkout') {
             steps {
-
                 echo 'Checking out source code...'
-
                 checkout scm
 
                 script {
-
-                    // Get Git commit
                     env.GIT_COMMIT_SHORT = sh(
                         script: 'git rev-parse --short HEAD',
                         returnStdout: true
                     ).trim()
 
-                    // Get AWS account ID
-                    env.AWS_ACCOUNT_ID = sh(
-                        script: '''
-                            aws sts get-caller-identity \
-                            --query Account \
-                            --output text
-                        ''',
-                        returnStdout: true
-                    ).trim()
+                    env.SELECTED_AWS_REGION = params.AWS_REGION
+                    env.SELECTED_ECR_REPOSITORY = params.ECR_REPOSITORY
+                    env.SELECTED_EKS_CLUSTER = params.EKS_CLUSTER
+                    env.SELECTED_K8S_NAMESPACE = params.K8S_NAMESPACE
+                    env.PUSH_LATEST_VALUE = params.PUSH_LATEST.toString()
+                    env.DEPLOY_TO_EKS_VALUE = params.DEPLOY_TO_EKS.toString()
 
-                    // Create unique image tag
-                    env.IMAGE_TAG =
-                        "${BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
-
-                    // ECR registry
-                    env.ECR_REGISTRY =
-                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
-
-                    // Full Docker image
-                    env.IMAGE_URI =
-                        "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
+                    if (params.IMAGE_TAG?.trim()) {
+                        env.SELECTED_IMAGE_TAG = params.IMAGE_TAG.trim()
+                    } else {
+                        env.SELECTED_IMAGE_TAG =
+                            "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+                    }
                 }
 
-                echo "=========================================="
-                echo "Git Commit    : ${env.GIT_COMMIT_SHORT}"
-                echo "AWS Account   : ${env.AWS_ACCOUNT_ID}"
-                echo "AWS Region    : ${env.AWS_REGION}"
-                echo "ECR Repository: ${env.ECR_REPOSITORY}"
-                echo "Image         : ${env.IMAGE_URI}"
-                echo "EKS Cluster   : ${env.EKS_CLUSTER}"
-                echo "=========================================="
+                echo """
+==========================================
+Build configuration
+==========================================
+Git Commit     : ${env.GIT_COMMIT_SHORT}
+AWS Region     : ${env.SELECTED_AWS_REGION}
+ECR Repository : ${env.SELECTED_ECR_REPOSITORY}
+EKS Cluster    : ${env.SELECTED_EKS_CLUSTER}
+Namespace      : ${env.SELECTED_K8S_NAMESPACE}
+Image Tag      : ${env.SELECTED_IMAGE_TAG}
+Run Tests      : ${params.RUN_TESTS}
+Push Latest    : ${params.PUSH_LATEST}
+Deploy to EKS  : ${params.DEPLOY_TO_EKS}
+==========================================
+"""
             }
         }
 
+        stage('Test Package') {
+            when {
+                expression {
+                    return params.RUN_TESTS
+                }
+            }
 
-        /*
-         * ============================================
-         * TEST
-         * ============================================
-         */
-
-        stage('Test') {
             steps {
-
                 echo 'Running application tests...'
 
                 sh '''
                     set -eux
 
                     python3 --version
-                    pip3 --version
 
                     python3 -m venv .venv
-
                     . .venv/bin/activate
 
-                    pip install --upgrade pip
-
+                    python -m pip install --upgrade pip
                     pip install -r requirements.txt
-
                     pip install pytest
 
                     pytest -v
@@ -115,224 +150,128 @@ pipeline {
             }
         }
 
-
-        /*
-         * ============================================
-         * DOCKER BUILD
-         * ============================================
-         */
-
-        stage('Docker Build') {
+        stage('Build and Push Image') {
             steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: "${params.AWS_CREDENTIALS_ID}"]
+                ]) {
+                    script {
+                        env.AWS_ACCOUNT_ID = sh(
+                            script: '''
+                                aws sts get-caller-identity \
+                                    --query Account \
+                                    --output text
+                            ''',
+                            returnStdout: true
+                        ).trim()
 
-                echo 'Building Docker image...'
+                        env.ECR_REGISTRY =
+                            "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.SELECTED_AWS_REGION}.amazonaws.com"
 
-                sh '''
-                    set -eux
+                        env.IMAGE_URI =
+                            "${env.ECR_REGISTRY}/${env.SELECTED_ECR_REPOSITORY}:${env.SELECTED_IMAGE_TAG}"
 
-                    docker build \
-                        -t "${IMAGE_URI}" \
-                        -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest" \
-                        .
-                '''
+                        env.LATEST_IMAGE_URI =
+                            "${env.ECR_REGISTRY}/${env.SELECTED_ECR_REPOSITORY}:latest"
+                    }
+
+                    sh '''
+                        set -eux
+
+                        echo "Image URI: ${IMAGE_URI}"
+
+                        aws ecr get-login-password \
+                            --region "${SELECTED_AWS_REGION}" \
+                        | docker login \
+                            --username AWS \
+                            --password-stdin "${ECR_REGISTRY}"
+
+                        docker build \
+                            -t "${IMAGE_URI}" \
+                            -t "${LATEST_IMAGE_URI}" \
+                            .
+
+                        docker push "${IMAGE_URI}"
+
+                        if [ "${PUSH_LATEST_VALUE}" = "true" ]; then
+                            echo "Pushing latest image tag..."
+                            docker push "${LATEST_IMAGE_URI}"
+                        else
+                            echo "Skipping latest image tag."
+                        fi
+                    '''
+                }
             }
         }
-
-
-        /*
-         * ============================================
-         * ECR LOGIN
-         * ============================================
-         */
-
-        stage('ECR Login') {
-            steps {
-
-                echo 'Logging in to Amazon ECR...'
-
-                sh '''
-                    set -eux
-
-                    aws ecr get-login-password \
-                        --region "${AWS_REGION}" \
-                    | docker login \
-                        --username AWS \
-                        --password-stdin "${ECR_REGISTRY}"
-                '''
-            }
-        }
-
-
-        /*
-         * ============================================
-         * PUSH IMAGE TO ECR
-         * ============================================
-         */
-
-        stage('Push to ECR') {
-            steps {
-
-                echo 'Pushing Docker image to ECR...'
-
-                sh '''
-                    set -eux
-
-                    echo "Pushing versioned image:"
-                    echo "${IMAGE_URI}"
-
-                    docker push "${IMAGE_URI}"
-
-                    echo "Pushing latest image:"
-
-                    docker push \
-                        "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
-                '''
-            }
-        }
-
-
-        /*
-         * ============================================
-         * EKS AUTHENTICATION
-         * ============================================
-         */
-
-        stage('EKS Authentication') {
-            steps {
-
-                echo 'Connecting to EKS...'
-
-                sh '''
-                    set -eux
-
-                    echo "Updating kubeconfig..."
-
-                    aws eks update-kubeconfig \
-                        --region "${AWS_REGION}" \
-                        --name "${EKS_CLUSTER}"
-
-                    echo "Checking Kubernetes connection..."
-
-                    kubectl cluster-info
-
-                    echo "Checking EKS nodes..."
-
-                    kubectl get nodes
-                '''
-            }
-        }
-
-
-        /*
-         * ============================================
-         * DEPLOY TO EKS
-         * ============================================
-         */
 
         stage('Deploy to EKS') {
+            when {
+                expression {
+                    return params.DEPLOY_TO_EKS
+                }
+            }
+
             steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: "${params.AWS_CREDENTIALS_ID}"]
+                ]) {
+                    sh '''
+                        set -eux
 
-                echo 'Deploying application to EKS...'
+                        aws eks update-kubeconfig \
+                            --region "${SELECTED_AWS_REGION}" \
+                            --name "${SELECTED_EKS_CLUSTER}"
 
-                sh '''
-                    set -eux
+                        kubectl apply -f k8s/namespace.yaml
 
-                    echo "Creating namespace..."
+                        sed \
+                            -e "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
+                            -e "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                            k8s/deployment.yaml \
+                            | kubectl apply -f -
 
-                    kubectl apply \
-                        -f k8s/namespace.yaml
+                        sed \
+                            "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                            k8s/service.yaml \
+                            | kubectl apply -f -
 
-
-                    echo "Deploying application..."
-
-                    sed \
-                        "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
-                        k8s/deployment.yaml \
-                        | kubectl apply -f -
-
-
-                    echo "Creating/updating service..."
-
-                    kubectl apply \
-                        -f k8s/service.yaml
-                '''
+                        kubectl rollout status \
+                            deployment/"${APP_NAME}" \
+                            --namespace "${SELECTED_K8S_NAMESPACE}" \
+                            --timeout=180s
+                    '''
+                }
             }
         }
 
-
-        /*
-         * ============================================
-         * ROLLOUT
-         * ============================================
-         */
-
-        stage('Rollout Verification') {
-            steps {
-
-                echo 'Waiting for Kubernetes rollout...'
-
-                sh '''
-                    set -eux
-
-                    kubectl rollout status \
-                        deployment/jenkins-demo \
-                        -n "${K8S_NAMESPACE}" \
-                        --timeout=180s
-                '''
+        stage('Verify Deployment') {
+            when {
+                expression {
+                    return params.DEPLOY_TO_EKS
+                }
             }
-        }
 
-
-        /*
-         * ============================================
-         * VERIFY DEPLOYMENT
-         * ============================================
-         */
-
-        stage('Deployment Verification') {
             steps {
-
-                echo 'Verifying Kubernetes deployment...'
-
                 sh '''
                     set -eux
 
-                    echo "=========================================="
-                    echo "DEPLOYMENT"
-                    echo "=========================================="
-
-                    kubectl get deployment \
-                        jenkins-demo \
-                        -n "${K8S_NAMESPACE}" \
-                        -o wide
-
-
-                    echo "=========================================="
-                    echo "PODS"
-                    echo "=========================================="
+                    kubectl get deployment "${APP_NAME}" \
+                        --namespace "${SELECTED_K8S_NAMESPACE}" \
+                        --output wide
 
                     kubectl get pods \
-                        -n "${K8S_NAMESPACE}" \
-                        -o wide
+                        --namespace "${SELECTED_K8S_NAMESPACE}" \
+                        --output wide
 
+                    kubectl get service "${APP_NAME}" \
+                        --namespace "${SELECTED_K8S_NAMESPACE}"
 
-                    echo "=========================================="
-                    echo "SERVICE"
-                    echo "=========================================="
-
-                    kubectl get service \
-                        jenkins-demo \
-                        -n "${K8S_NAMESPACE}"
-
-
-                    echo "=========================================="
-                    echo "IMAGE"
-                    echo "=========================================="
-
-                    kubectl get deployment \
-                        jenkins-demo \
-                        -n "${K8S_NAMESPACE}" \
-                        -o jsonpath='{.spec.template.spec.containers[0].image}'
+                    echo "Deployed image:"
+                    kubectl get deployment "${APP_NAME}" \
+                        --namespace "${SELECTED_K8S_NAMESPACE}" \
+                        --output jsonpath='{.spec.template.spec.containers[0].image}'
 
                     echo
                 '''
@@ -340,53 +279,27 @@ pipeline {
         }
     }
 
-
-    /*
-     * ================================================
-     * POST ACTIONS
-     * ================================================
-     */
-
     post {
-
         success {
-
-            echo '''
+            echo """
 ========================================
-       DEPLOYMENT SUCCESSFUL
+BUILD COMPLETED SUCCESSFULLY
 ========================================
-'''
-
-            echo "Application : jenkins-demo"
-            echo "Image       : ${env.IMAGE_URI}"
-            echo "EKS Cluster : ${env.EKS_CLUSTER}"
-            echo "Namespace   : ${env.K8S_NAMESPACE}"
-            echo "Region      : ${env.AWS_REGION}"
+Application : ${env.APP_NAME}
+Image       : ${env.IMAGE_URI ?: 'Not built'}
+EKS Cluster : ${env.SELECTED_EKS_CLUSTER}
+Namespace   : ${env.SELECTED_K8S_NAMESPACE}
+========================================
+"""
         }
-
 
         failure {
-
-            echo '''
-========================================
-       BUILD / DEPLOYMENT FAILED
-========================================
-'''
-
-            echo "Check the failed stage above."
+            echo 'Build or deployment failed. Check the failed Jenkins stage and console output.'
         }
 
-
         always {
-
-            echo 'Cleaning Docker images...'
-
-            sh '''
-                docker image prune -f || true
-            '''
-
+            sh 'docker image prune -f || true'
             deleteDir()
         }
     }
 }
-```
