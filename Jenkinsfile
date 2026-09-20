@@ -197,7 +197,6 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
                     fi
                     pip install pytest
 
-                    # Set PYTHONPATH so pytest can locate app.py in the root directory
                     export PYTHONPATH=.
                     pytest -v
                 '''
@@ -206,10 +205,10 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
 
         stage('Build and Push Image') {
             steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: "${params.AWS_CREDENTIALS_ID}"]
-                ]) {
+                // Using standard AWS CLI environment or fallback credentials binding
+                withCredentials([aws(credentialsId: "${params.AWS_CREDENTIALS_ID}", 
+                                      accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
+                                      secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                     script {
                         env.AWS_ACCOUNT_ID = sh(
                             script: '''
@@ -269,35 +268,32 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
             }
 
             steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: "${params.AWS_CREDENTIALS_ID}"]
-                ]) {
-                    script {
-                        sh '''
-                            set -eux
+                withCredentials([aws(credentialsId: "${params.AWS_CREDENTIALS_ID}", 
+                                      accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
+                                      secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        set -eux
 
-                            eval "${CONFIGURE_KUBECTL_CMD}"
+                        eval "${CONFIGURE_KUBECTL_CMD}"
 
-                            kubectl apply -f k8s/namespace.yaml --validate=false
+                        kubectl apply -f k8s/namespace.yaml --validate=false
 
-                            sed \
-                                -e "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
-                                -e "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
-                                k8s/deployment.yaml \
-                                | kubectl apply -f - --validate=false
+                        sed \
+                            -e "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
+                            -e "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                            k8s/deployment.yaml \
+                            | kubectl apply -f - --validate=false
 
-                            sed \
-                                "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
-                                k8s/service.yaml \
-                                | kubectl apply -f - --validate=false
+                        sed \
+                            "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                            k8s/service.yaml \
+                            | kubectl apply -f - --validate=false
 
-                            kubectl rollout status \
-                                deployment/"${APP_NAME}" \
-                                --namespace "${SELECTED_K8S_NAMESPACE}" \
-                                --timeout=180s
-                        '''
-                    }
+                        kubectl rollout status \
+                            deployment/"${APP_NAME}" \
+                            --namespace "${SELECTED_K8S_NAMESPACE}" \
+                            --timeout=180s
+                    '''
                 }
             }
         }
