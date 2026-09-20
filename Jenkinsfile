@@ -306,11 +306,11 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
             }
 
             steps {
-                withCredentials([usernamePassword(
+                withCredentials([aws(
                     credentialsId: "${params.AWS_CREDENTIALS_ID}",
-                    usernameVariable: 'AWS_ACCESS_KEY_ID',
-                    passwordVariable: 'AWS_SECRET_ACCESS_KEY'
-             )])
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+             )]) {
                 sh '''
                     set -eux
 
