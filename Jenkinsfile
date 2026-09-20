@@ -9,6 +9,29 @@ pipeline {
     }
 
     parameters {
+        // --- Infrastructure & Endpoint Parameters ---
+        string(
+            name: 'API_GATEWAY_URL',
+            defaultValue: 'https://cb1psqzdsf.execute-api.us-east-1.amazonaws.com',
+            trim: true,
+            description: 'API Gateway endpoint URL.'
+        )
+
+        string(
+            name: 'RDS_ENDPOINT',
+            defaultValue: 'saas-auth-db.c3mogsy6s6p9.us-east-1.rds.amazonaws.com:5432',
+            trim: true,
+            description: 'Database RDS endpoint and port.'
+        )
+
+        string(
+            name: 'CONFIGURE_KUBECTL_CMD',
+            defaultValue: 'aws eks update-kubeconfig --region us-east-1 --name demo-eks',
+            trim: true,
+            description: 'AWS CLI command to update kubeconfig for EKS.'
+        )
+
+        // --- AWS & Kubernetes Parameters ---
         choice(
             name: 'AWS_REGION',
             choices: [
@@ -22,7 +45,7 @@ pipeline {
 
         string(
             name: 'ECR_REPOSITORY',
-            defaultValue: 'jenkins-demo',
+            defaultValue: 'saas-app',
             trim: true,
             description: 'Amazon ECR repository name.'
         )
@@ -109,15 +132,17 @@ pipeline {
 ==========================================
 Build configuration
 ==========================================
-Git Commit     : ${env.GIT_COMMIT_SHORT}
-AWS Region     : ${env.SELECTED_AWS_REGION}
-ECR Repository : ${env.SELECTED_ECR_REPOSITORY}
-EKS Cluster    : ${env.SELECTED_EKS_CLUSTER}
-Namespace      : ${env.SELECTED_K8S_NAMESPACE}
-Image Tag      : ${env.SELECTED_IMAGE_TAG}
-Run Tests      : ${params.RUN_TESTS}
-Push Latest    : ${params.PUSH_LATEST}
-Deploy to EKS  : ${params.DEPLOY_TO_EKS}
+Git Commit      : ${env.GIT_COMMIT_SHORT}
+AWS Region      : ${env.SELECTED_AWS_REGION}
+ECR Repository  : ${env.SELECTED_ECR_REPOSITORY}
+EKS Cluster     : ${env.SELECTED_EKS_CLUSTER}
+Namespace       : ${env.SELECTED_K8S_NAMESPACE}
+Image Tag       : ${env.SELECTED_IMAGE_TAG}
+API Gateway URL : ${params.API_GATEWAY_URL}
+RDS Endpoint    : ${params.RDS_ENDPOINT}
+Run Tests       : ${params.RUN_TESTS}
+Push Latest     : ${params.PUSH_LATEST}
+Deploy to EKS   : ${params.DEPLOY_TO_EKS}
 ==========================================
 """
             }
@@ -215,6 +240,8 @@ Deploy to EKS  : ${params.DEPLOY_TO_EKS}
                             --password-stdin "${ECR_REGISTRY}"
 
                         docker build \
+                            --build-arg API_GATEWAY_URL="${API_GATEWAY_URL}" \
+                            --build-arg RDS_ENDPOINT="${RDS_ENDPOINT}" \
                             -t "${IMAGE_URI}" \
                             -t "${LATEST_IMAGE_URI}" \
                             .
@@ -244,31 +271,32 @@ Deploy to EKS  : ${params.DEPLOY_TO_EKS}
                     [$class: 'AmazonWebServicesCredentialsBinding',
                      credentialsId: "${params.AWS_CREDENTIALS_ID}"]
                 ]) {
-                    sh '''
-                        set -eux
+                    script {
+                        // Pass the parameterized command to shell execution
+                        sh '''
+                            set -eux
 
-                        aws eks update-kubeconfig \
-                            --region "${SELECTED_AWS_REGION}" \
-                            --name "${SELECTED_EKS_CLUSTER}"
+                            eval "${CONFIGURE_KUBECTL_CMD}"
 
-                        kubectl apply -f k8s/namespace.yaml --validate=false
+                            kubectl apply -f k8s/namespace.yaml --validate=false
 
-                        sed \
-                            -e "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
-                            -e "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
-                            k8s/deployment.yaml \
-                            | kubectl apply -f - --validate=false
+                            sed \
+                                -e "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
+                                -e "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                                k8s/deployment.yaml \
+                                | kubectl apply -f - --validate=false
 
-                        sed \
-                            "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
-                            k8s/service.yaml \
-                            | kubectl apply -f - --validate=false
+                            sed \
+                                "s|NAMESPACE_PLACEHOLDER|${SELECTED_K8S_NAMESPACE}|g" \
+                                k8s/service.yaml \
+                                | kubectl apply -f - --validate=false
 
-                        kubectl rollout status \
-                            deployment/"${APP_NAME}" \
-                            --namespace "${SELECTED_K8S_NAMESPACE}" \
-                            --timeout=180s
-                    '''
+                            kubectl rollout status \
+                                deployment/"${APP_NAME}" \
+                                --namespace "${SELECTED_K8S_NAMESPACE}" \
+                                --timeout=180s
+                        '''
+                    }
                 }
             }
         }
@@ -312,10 +340,12 @@ Deploy to EKS  : ${params.DEPLOY_TO_EKS}
 ========================================
 BUILD COMPLETED SUCCESSFULLY
 ========================================
-Application : ${env.APP_NAME}
-Image       : ${env.IMAGE_URI ?: 'Not built'}
-EKS Cluster : ${env.SELECTED_EKS_CLUSTER}
-Namespace   : ${env.SELECTED_K8S_NAMESPACE}
+Application     : ${env.APP_NAME}
+Image           : ${env.IMAGE_URI ?: 'Not built'}
+EKS Cluster     : ${env.SELECTED_EKS_CLUSTER}
+Namespace       : ${env.SELECTED_K8S_NAMESPACE}
+API Gateway     : ${params.API_GATEWAY_URL}
+RDS Endpoint    : ${params.RDS_ENDPOINT}
 ========================================
 """
         }
