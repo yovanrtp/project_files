@@ -197,6 +197,8 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
                     fi
                     pip install pytest
 
+                    # Set PYTHONPATH so pytest can locate app.py in the root directory
+                    export PYTHONPATH=.
                     pytest -v
                 '''
             }
@@ -272,7 +274,6 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
                      credentialsId: "${params.AWS_CREDENTIALS_ID}"]
                 ]) {
                     script {
-                        // Pass the parameterized command to shell execution
                         sh '''
                             set -eux
 
