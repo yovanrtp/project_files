@@ -9,7 +9,6 @@ pipeline {
     }
 
     parameters {
-        // --- Infrastructure & Endpoint Parameters ---
         string(
             name: 'API_GATEWAY_URL',
             defaultValue: 'https://cb1psqzdsf.execute-api.us-east-1.amazonaws.com',
@@ -31,7 +30,6 @@ pipeline {
             description: 'AWS CLI command to update kubeconfig for EKS.'
         )
 
-        // --- AWS & Kubernetes Parameters ---
         choice(
             name: 'AWS_REGION',
             choices: [
@@ -153,18 +151,18 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
                 sh '''
                     set +e
                     echo "Checking/Installing required binaries..."
-                    
-                    if ! command -v python3 &> /dev/null; then
+
+                    if ! command -v python3 > /dev/null 2>&1; then
                         apt-get update && apt-get install -y python3 python3-pip python3-venv curl unzip
                     fi
 
-                    if ! command -v aws &> /dev/null; then
+                    if ! command -v aws > /dev/null 2>&1; then
                         curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
                         unzip -q awscliv2.zip
                         ./aws/install --update
                     fi
 
-                    if ! command -v kubectl &> /dev/null; then
+                    if ! command -v kubectl > /dev/null 2>&1; then
                         curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
                         chmod +x kubectl
                         mv kubectl /usr/local/bin/
@@ -187,14 +185,15 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
                     set -eux
 
                     python3 --version
-
                     python3 -m venv .venv
                     . .venv/bin/activate
 
                     python -m pip install --upgrade pip
+
                     if [ -f "requirements.txt" ]; then
                         pip install -r requirements.txt
                     fi
+
                     pip install pytest
 
                     export PYTHONPATH=.
@@ -205,10 +204,11 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
 
         stage('Build and Push Image') {
             steps {
-                // Using standard AWS CLI environment or fallback credentials binding
-                withCredentials([aws(credentialsId: "${params.AWS_CREDENTIALS_ID}", 
-                                      accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
-                                      secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                withCredentials([aws(
+                    credentialsId: "${params.AWS_CREDENTIALS_ID}",
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
                     script {
                         env.AWS_ACCOUNT_ID = sh(
                             script: '''
@@ -268,9 +268,11 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
             }
 
             steps {
-                withCredentials([aws(credentialsId: "${params.AWS_CREDENTIALS_ID}", 
-                                      accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
-                                      secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                withCredentials([aws(
+                    credentialsId: "${params.AWS_CREDENTIALS_ID}",
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
                     sh '''
                         set -eux
 
@@ -310,28 +312,33 @@ Deploy to EKS   : ${params.DEPLOY_TO_EKS}
                     credentialsId: "${params.AWS_CREDENTIALS_ID}",
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-             )]) {
-                sh '''
-                    set -eux
+                )]) {
+                    sh '''
+                        set -eux
 
-                    kubectl get deployment "${APP_NAME}" \
-                        --namespace "${SELECTED_K8S_NAMESPACE}" \
-                        --output wide
+                        aws eks update-kubeconfig \
+                            --region "${SELECTED_AWS_REGION}" \
+                            --name "${SELECTED_EKS_CLUSTER}"
 
-                    kubectl get pods \
-                        --namespace "${SELECTED_K8S_NAMESPACE}" \
-                        --output wide
+                        kubectl get deployment "${APP_NAME}" \
+                            --namespace "${SELECTED_K8S_NAMESPACE}" \
+                            --output wide
 
-                    kubectl get service "${APP_NAME}" \
-                        --namespace "${SELECTED_K8S_NAMESPACE}"
+                        kubectl get pods \
+                            --namespace "${SELECTED_K8S_NAMESPACE}" \
+                            --output wide
 
-                    echo "Deployed image:"
-                    kubectl get deployment "${APP_NAME}" \
-                        --namespace "${SELECTED_K8S_NAMESPACE}" \
-                        --output jsonpath='{.spec.template.spec.containers[0].image}'
+                        kubectl get service "${APP_NAME}" \
+                            --namespace "${SELECTED_K8S_NAMESPACE}"
 
-                    echo
-                '''
+                        echo "Deployed image:"
+                        kubectl get deployment "${APP_NAME}" \
+                            --namespace "${SELECTED_K8S_NAMESPACE}" \
+                            --output jsonpath='{.spec.template.spec.containers[0].image}'
+
+                        echo
+                    '''
+                }
             }
         }
     }
