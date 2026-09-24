@@ -99,32 +99,42 @@ pipeline {
         APP_NAME = 'jenkins-demo'
     }
 
-    stages {
-        stage('Checkout') {
+        stage('Prepare Tools') {
             steps {
-                echo 'Checking out source code...'
-                checkout scm
+                sh '''
+                    set -e
+                    echo "Checking/Installing required binaries..."
 
-                script {
-                    env.GIT_COMMIT_SHORT = sh(
-                        script: 'git rev-parse --short HEAD',
-                        returnStdout: true
-                    ).trim()
+                    # Ensure apt-get runs cleanly without interactive prompts
+                    export DEBIAN_FRONTEND=noninteractive
 
-                    env.SELECTED_AWS_REGION = params.AWS_REGION
-                    env.SELECTED_ECR_REPOSITORY = params.ECR_REPOSITORY
-                    env.SELECTED_EKS_CLUSTER = params.EKS_CLUSTER
-                    env.SELECTED_K8S_NAMESPACE = params.K8S_NAMESPACE
-                    env.PUSH_LATEST_VALUE = params.PUSH_LATEST.toString()
-                    env.DEPLOY_TO_EKS_VALUE = params.DEPLOY_TO_EKS.toString()
+                    # 1. Install Python, Pip, and explicitly the 3.13 venv module
+                    if ! command -v python3 > /dev/null 2>&1 || ! python3 -m venv --help > /dev/null 2>&1; then
+                        echo "Installing Python tools..."
+                        apt-get update -y
+                        # We include python3.13-venv to match your active python3 version
+                        apt-get install -y python3 python3-pip python3-venv python3.13-venv curl unzip
+                    fi
 
-                    if (params.IMAGE_TAG?.trim()) {
-                        env.SELECTED_IMAGE_TAG = params.IMAGE_TAG.trim()
-                    } else {
-                        env.SELECTED_IMAGE_TAG =
-                            "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
-                    }
-                }
+                    # 2. Install AWS CLI v2
+                    if ! command -v aws > /dev/null 2>&1; then
+                        echo "Installing AWS CLI..."
+                        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                        unzip -q awscliv2.zip
+                        ./aws/install --update
+                        rm -rf aws awscliv2.zip # Cleanup
+                    fi
+
+                    # 3. Install kubectl
+                    if ! command -v kubectl > /dev/null 2>&1; then
+                        echo "Installing kubectl..."
+                        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                        chmod +x kubectl
+                        mv kubectl /usr/local/bin/
+                    fi
+                '''
+            }
+        }
 
                 echo """
 ==========================================
