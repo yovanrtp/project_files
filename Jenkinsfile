@@ -9,6 +9,7 @@ pipeline {
     }
 
     parameters {
+<<<<<<< HEAD
         string(name: 'API_GATEWAY_URL', defaultValue: 'https://cb1psqzdsf.execute-api.us-east-1.amazonaws.com', trim: true, description: 'API Gateway endpoint URL.')
         string(name: 'RDS_ENDPOINT', defaultValue: 'saas-auth-db.c3mogsy6s6p9.us-east-1.rds.amazonaws.com:5432', trim: true, description: 'Database RDS endpoint and port.')
         string(name: 'CONFIGURE_KUBECTL_CMD', defaultValue: 'aws eks update-kubeconfig --region us-east-1 --name demo-eks', trim: true, description: 'AWS CLI command to update kubeconfig for EKS.')
@@ -21,6 +22,92 @@ pipeline {
         booleanParam(name: 'PUSH_LATEST', defaultValue: true, description: 'Also push the Docker image with the latest tag.')
         booleanParam(name: 'DEPLOY_TO_EKS', defaultValue: true, description: 'Deploy the pushed image to Amazon EKS.')
         string(name: 'AWS_CREDENTIALS_ID', defaultValue: 'aws-jenkins-credentials', trim: true, description: 'Jenkins credential ID containing AWS credentials.')
+=======
+        string(
+            name: 'API_GATEWAY_URL',
+            defaultValue: 'https://rxm674r62d.execute-api.us-east-1.amazonaws.com',
+            trim: true,
+            description: 'API Gateway endpoint URL.'
+        )
+
+        string(
+            name: 'RDS_ENDPOINT',
+            defaultValue: 'saas-auth-db.c3mogsy6s6p9.us-east-1.rds.amazonaws.com:5432',
+            trim: true,
+            description: 'Database RDS endpoint and port.'
+        )
+
+        string(
+            name: 'CONFIGURE_KUBECTL_CMD',
+            defaultValue: 'aws eks update-kubeconfig --region us-east-1 --name demo-eks',
+            trim: true,
+            description: 'AWS CLI command to update kubeconfig for EKS.'
+        )
+
+        choice(
+            name: 'AWS_REGION',
+            choices: [
+                'us-east-1',
+                'us-east-2',
+                'us-west-1',
+                'us-west-2'
+            ],
+            description: 'AWS Region used for ECR and EKS.'
+        )
+
+        string(
+            name: 'ECR_REPOSITORY',
+            defaultValue: 'saas-app',
+            trim: true,
+            description: 'Amazon ECR repository name.'
+        )
+
+        string(
+            name: 'EKS_CLUSTER',
+            defaultValue: 'demo-eks',
+            trim: true,
+            description: 'Target Amazon EKS cluster name.'
+        )
+
+        string(
+            name: 'K8S_NAMESPACE',
+            defaultValue: 'jenkins-demo',
+            trim: true,
+            description: 'Kubernetes namespace for the deployment.'
+        )
+
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: '',
+            trim: true,
+            description: 'Optional image tag. Leave empty to use BUILD_NUMBER-GIT_COMMIT.'
+        )
+
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run application tests before building the Docker image.'
+        )
+
+        booleanParam(
+            name: 'PUSH_LATEST',
+            defaultValue: true,
+            description: 'Also push the Docker image with the latest tag.'
+        )
+
+        booleanParam(
+            name: 'DEPLOY_TO_EKS',
+            defaultValue: true,
+            description: 'Deploy the pushed image to Amazon EKS.'
+        )
+
+        string(
+            name: 'AWS_CREDENTIALS_ID',
+            defaultValue: 'aws-jenkins-credentials',
+            trim: true,
+            description: 'Jenkins credential ID containing AWS credentials.'
+        )
+>>>>>>> 8d4dfab (test commit)
     }
 
     environment {
